@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "to-16x9"
+# Version is read dynamically from src/to_16x9/_version.py (single source of
+# truth). Scheme: 1.YYYYmmdd.1HHmmss. See [tool.hatch.version] below.
+dynamic = ["version"]
+description = "Convert photos to 16:9 by center crop, solid padding, or blurred background, with offset support"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Yuan-Yi Chang", email = "changyy.csie@gmail.com" }]
+keywords = ["image", "16:9", "aspect-ratio", "crop", "pillow"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Graphics",
+]
+dependencies = ["Pillow>=10.3"]
+
+[project.urls]
+Homepage = "https://github.com/changyy/py-to-16x9"
+Repository = "https://github.com/changyy/py-to-16x9"
+Issues = "https://github.com/changyy/py-to-16x9/issues"
+"Web version" = "https://changyy.github.io/py-to-16x9/"
+
+[project.scripts]
+to-16x9 = "to_16x9.cli:main"
+
+[tool.hatch.version]
+path = "src/to_16x9/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/to_16x9"]

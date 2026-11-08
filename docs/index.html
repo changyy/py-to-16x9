@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>to-16x9</title>
+<meta name="description" content="Convert a photo to 16:9 in your browser: center crop, solid padding or blurred background, then drag to reposition. Nothing is uploaded.">
+<style>
+:root {
+  --bg: #f4f4f2; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+  --line: #deded9; --accent: #2f6fde; --stage: #e6e6e1; --ok: #1f8a4c; --err: #c23b2b;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --panel: #20201e; --text: #ececea; --muted: #9a9a94;
+    --line: #34342f; --accent: #6d9cf0; --stage: #0d0d0c; --ok: #4cc283; --err: #ef6f5e;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif;
+  display: grid; grid-template-rows: auto 1fr auto; }
+header, footer { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center;
+  padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+footer { border-bottom: 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+h1 { font-size: 15px; margin: 0 8px 0 0; }
+h1 a { color: inherit; text-decoration: none; }
+.file { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28ch; }
+.spacer { flex: 1; }
+label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+input, select, button { font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+input[type=number] { width: 8ch; }
+input[type=color] { padding: 0 2px; width: 34px; height: 28px; }
+button { cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+[hidden] { display: none !important; }
+main { position: relative; display: grid; place-items: center; background: var(--stage);
+  overflow: hidden; padding: 16px; min-height: 240px; }
+main.over { outline: 3px dashed var(--accent); outline-offset: -10px; }
+#view { max-width: 100%; max-height: 100%; cursor: grab; touch-action: none;
+  box-shadow: 0 2px 16px rgba(0,0,0,.25); }
+#view.dragging { cursor: grabbing; }
+#toast { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); padding: 6px 12px;
+  border-radius: 6px; background: var(--panel); border: 1px solid var(--line); opacity: 0;
+  transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
+#toast.show { opacity: 1; }
+#toast.ok { color: var(--ok); } #toast.err { color: var(--err); }
+code { font-family: ui-monospace, Menlo, monospace; color: var(--text); word-break: break-all; }
+kbd { font-family: ui-monospace, Menlo, monospace; font-size: 12px; border: 1px solid var(--line);
+  border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
+@media (max-width: 640px) { .hint { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="https://github.com/changyy/py-to-16x9">to-16x9</a></h1>
+  <button id="open" class="primary">Open photo…</button>
+  <input id="picker" type="file" accept="image/*" hidden>
+  <span class="file" id="file"></span>
+  <span class="spacer"></span>
+  <label>Mode <select id="mode"><option value="crop">crop</option><option value="pad">pad</option><option value="blur">blur</option></select></label>
+  <label id="colorBox">Color <input id="color" type="color" value="#000000"></label>
+  <label>Zoom <input id="zoom" type="number" step="0.05" min="1" max="8" value="1"></label>
+  <label>offset-x <input id="dx" type="number" step="1" value="0"></label>
+  <label>offset-y <input id="dy" type="number" step="1" value="0"></label>
+  <label>Step <input id="step" type="number" min="1" value="10"></label>
+  <label>Width <input id="width" type="number" min="16" placeholder="original"></label>
+  <button id="reset" title="Back to center, zoom 1 (0)">Reset</button>
+  <button id="save" class="primary" title="Download (S)">Download</button>
+</header>
+<main id="stage"><canvas id="view" aria-label="16:9 preview"></canvas><div id="toast" role="status"></div></main>
+<footer>
+  <span class="hint">Drop, paste or open a photo. Drag or <kbd>←</kbd><kbd>↑</kbd><kbd>→</kbd><kbd>↓</kbd> to move it
+    (<kbd>Shift</kbd> ×10, <kbd>Alt</kbd> 1px) · wheel or <kbd>+</kbd><kbd>-</kbd> zoom · <kbd>0</kbd> reset · <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> mode · <kbd>S</kbd> download.
+    Processed locally, nothing is uploaded.</span>
+  <span id="range"></span>
+  <code id="cmd"></code>
+</footer>
+<script>
+// Same math as to_16x9/cli.py, so offsets shown here can be reused with the CLI for batch jobs.
+const RATIO = 16 / 9;
+const $ = (id) => document.getElementById(id);
+const view = $("view");
+
+// Python's round(): ties go to the even number.
+function pyRound(v) {
+  const f = Math.floor(v), d = v - f;
+  return d > 0.5 ? f + 1 : d < 0.5 ? f : f % 2 === 0 ? f : f + 1;
+}
+
+function targetSize(w, h, mode) {
+  if (mode === "crop") return w / h > RATIO ? [pyRound(h * RATIO), h] : [w, pyRound(w / RATIO)];
+  return w / h > RATIO ? [w, pyRound(w / RATIO)] : [pyRound(h * RATIO), h];
+}
+
+// crop: zoom >= 1 shrinks the crop frame; pad/blur: 0 < zoom <= 1 shrinks the photo.
+const zoomLimits = (mode) => (mode === "crop" ? [1, 8] : [0.05, 1]);
+
+function offsetRange(w, h, mode, zoom = 1) {
+  let [tw, th] = targetSize(w, h, mode), pw = w, ph = h, sx, sy;
+  if (mode === "crop") {
+    if (zoom !== 1) {
+      tw = Math.max(1, Math.min(w, pyRound(tw / zoom)));
+      th = Math.max(1, Math.min(h, pyRound(tw / RATIO)));
+    }
+    sx = w - tw; sy = h - th;
+  } else {
+    pw = Math.max(1, pyRound(w * zoom)); ph = Math.max(1, pyRound(h * zoom));
+    sx = tw - pw; sy = th - ph;
+  }
+  const cx = Math.floor(sx / 2), cy = Math.floor(sy / 2);
+  return { tw, th, pw, ph, cx, cy, x: [-cx, sx - cx], y: [-cy, sy - cy] };
+}
+
+const clamp = (v, [lo, hi]) => Math.min(Math.max(Math.round(v), lo), hi);
+
+const HAS_FILTER = "filter" in CanvasRenderingContext2D.prototype;
+
+// Cover-fit background blurred like ImageFilter.GaussianBlur(max(tw, th) // 40).
+function drawBlurred(ctx, img, w, h, outW, outH) {
+  const radius = Math.max(outW, outH) / 40;
+  if (HAS_FILTER) {
+    // Overscan by the blur radius so the edges don't fade to transparent.
+    const k = Math.max((outW + 4 * radius) / w, (outH + 4 * radius) / h);
+    ctx.filter = `blur(${radius}px)`;
+    ctx.drawImage(img, (outW - w * k) / 2, (outH - h * k) / 2, w * k, h * k);
+    ctx.filter = "none";
+    return;
+  }
+  // Fallback (older Safari): shrink, then enlarge in 2x steps for a smooth result.
+  let cw = Math.max(8, Math.round(outW / radius)), ch = Math.max(8, Math.round(outH / radius));
+  let cur = document.createElement("canvas");
+  cur.width = cw; cur.height = ch;
+  const k = Math.max(cw / w, ch / h);
+  cur.getContext("2d").drawImage(img, (cw - w * k) / 2, (ch - h * k) / 2, w * k, h * k);
+  while (cw * 2 < outW) {
+    const next = document.createElement("canvas");
+    next.width = cw *= 2; next.height = ch *= 2;
+    const n = next.getContext("2d");
+    n.imageSmoothingQuality = "high";
+    n.drawImage(cur, 0, 0, cw, ch);
+    cur = next;
+  }
+  ctx.drawImage(cur, 0, 0, outW, outH);
+}
+
+// Render the 16:9 result of `img` (w×h source pixels) onto `canvas`, outW pixels wide.
+function render(canvas, img, w, h, mode, color, dx, dy, zoom, outW) {
+  const r = offsetRange(w, h, mode, zoom);
+  dx = clamp(dx, r.x); dy = clamp(dy, r.y);
+  const k = outW / r.tw, outH = Math.round(outW / RATIO);
+  canvas.width = outW; canvas.height = outH;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingQuality = "high";
+  if (mode === "crop") {
+    ctx.drawImage(img, r.cx + dx, r.cy + dy, r.tw, r.th, 0, 0, outW, outH);
+    return;
+  }
+  if (mode === "blur") drawBlurred(ctx, img, w, h, outW, outH);
+  else { ctx.fillStyle = color; ctx.fillRect(0, 0, outW, outH); }
+  ctx.drawImage(img, (r.cx + dx) * k, (r.cy + dy) * k, r.pw * k, r.ph * k);
+}
+
+// Sample photo so the page is usable before anything is opened.
+function sample() {
+  const c = document.createElement("canvas");
+  c.width = 1200; c.height = 1600;
+  const g = c.getContext("2d");
+  const sky = g.createLinearGradient(0, 0, 0, 1600);
+  sky.addColorStop(0, "#f6b26b"); sky.addColorStop(0.55, "#e06666"); sky.addColorStop(1, "#3d2b56");
+  g.fillStyle = sky; g.fillRect(0, 0, 1200, 1600);
+  g.fillStyle = "#ffe599"; g.beginPath(); g.arc(780, 520, 170, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#2b1f3d";
+  g.beginPath(); g.moveTo(0, 1600); g.lineTo(0, 1050); g.lineTo(330, 820); g.lineTo(620, 1080);
+  g.lineTo(900, 900); g.lineTo(1200, 1120); g.lineTo(1200, 1600); g.fill();
+  g.fillStyle = "rgba(255,255,255,.85)"; g.font = "bold 64px sans-serif"; g.textAlign = "center";
+  g.fillText("sample 1200×1600", 600, 1450);
+  return c;
+}
+
+let img = sample(), name = "sample.jpg", type = "image/jpeg";
+let W = img.width, H = img.height, dx = 0, dy = 0, zoom = 1;
+
+const mode = () => $("mode").value;
+const range = () => offsetRange(W, H, mode(), zoom);
+
+// Keep zoom within the mode's limits, on a 0.01 grid so the CLI gets the same number.
+function setZoom(z) {
+  const [lo, hi] = zoomLimits(mode());
+  zoom = Math.min(Math.max(Math.round((+z || 1) * 100) / 100, lo), hi);
+  $("zoom").value = zoom;
+  $("zoom").min = lo; $("zoom").max = hi;
+  setOffset(dx, dy);
+}
+
+function setOffset(x, y) {
+  const r = range();
+  dx = clamp(x, r.x); dy = clamp(y, r.y);
+  $("dx").value = dx; $("dy").value = dy;
+  schedule();
+}
+
+// Move the photo itself; in crop mode that means moving the crop frame the other way.
+function nudge(px, py) {
+  const s = mode() === "crop" ? -1 : 1;
+  setOffset(dx + s * px, dy + s * py);
+}
+
+let frame = 0;
+function schedule() { if (!frame) frame = requestAnimationFrame(draw); }
+
+function draw() {
+  frame = 0;
+  const r = range(), stage = $("stage");
+  const fit = Math.min(stage.clientWidth - 32, (stage.clientHeight - 32) * RATIO);
+  const outW = Math.max(16, Math.min(r.tw, Math.round(fit * devicePixelRatio)));
+  render(view, img, W, H, mode(), $("color").value, dx, dy, zoom, outW);
+  view.style.width = Math.round(outW / devicePixelRatio) + "px";
+  $("colorBox").hidden = mode() !== "pad";
+  $("file").textContent = name;
+  $("range").textContent = `${W}×${H} → ${r.tw}×${r.th} · x ${r.x[0]}~${r.x[1]} · y ${r.y[0]}~${r.y[1]}`
+    + (r.x[0] === r.x[1] || r.y[0] === r.y[1] ? ` · ${mode() === "crop" ? "zoom > 1" : "zoom < 1"} to move both ways` : "");
+  let cmd = `to-16x9 "${name}" -m ${mode()} --offset-x ${dx} --offset-y ${dy}`;
+  if (zoom !== 1) cmd += ` --zoom ${zoom}`;
+  if (mode() === "pad" && $("color").value !== "#000000") cmd += ` --color "${$("color").value}"`;
+  if ($("width").value) cmd += ` --width ${$("width").value}`;
+  $("cmd").textContent = cmd;
+}
+
+let toastTimer;
+function toast(msg, kind) {
+  const t = $("toast");
+  t.textContent = msg; t.className = "show " + kind;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.className = kind), 2500);
+}
+
+function load(file) {
+  if (!file || !file.type.startsWith("image/")) return toast("Not an image file", "err");
+  const url = URL.createObjectURL(file), el = new Image();
+  el.onload = () => {
+    img = el; W = el.naturalWidth; H = el.naturalHeight;
+    name = file.name || "pasted.png"; type = file.type;
+    dx = dy = 0;
+    setZoom(zoom);
+  };
+  el.onerror = () => toast("Cannot decode this image", "err");
+  el.src = url;
+}
+
+function download() {
+  const r = range(), out = document.createElement("canvas");
+  const outW = parseInt($("width").value) || r.tw;
+  render(out, img, W, H, mode(), $("color").value, dx, dy, zoom, outW);
+  const t = type === "image/png" || type === "image/webp" ? type : "image/jpeg";
+  out.toBlob((b) => {
+    if (!b) return toast("Export failed", "err");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(b);
+    a.download = name.replace(/\.[^.]+$/, "") + "_16x9." + t.split("/")[1].replace("jpeg", "jpg");
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    toast(`Saved ${a.download} · ${out.width}×${out.height}`, "ok");
+  }, t, 0.95);
+}
+
+// Drag: convert screen movement to source pixels.
+let drag = null;
+view.addEventListener("pointerdown", (e) => {
+  view.setPointerCapture(e.pointerId);
+  view.classList.add("dragging");
+  drag = { x: e.clientX, y: e.clientY, dx, dy };
+});
+view.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const k = range().tw / view.clientWidth, s = mode() === "crop" ? -1 : 1;
+  setOffset(drag.dx + s * (e.clientX - drag.x) * k, drag.dy + s * (e.clientY - drag.y) * k);
+});
+const endDrag = () => { drag = null; view.classList.remove("dragging"); };
+view.addEventListener("pointerup", endDrag);
+view.addEventListener("pointercancel", endDrag);
+
+// Wheel: scroll up enlarges the photo, in every mode.
+view.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  // At least 0.01 per notch so small zooms don't get stuck by rounding.
+  setZoom(e.deltaY < 0 ? Math.max(zoom * 1.05, zoom + 0.01) : Math.min(zoom / 1.05, zoom - 0.01));
+}, { passive: false });
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.matches("input, select") || e.metaKey || e.ctrlKey) return;
+  const base = Math.max(1, parseInt($("step").value) || 10);
+  const step = e.altKey ? 1 : e.shiftKey ? base * 10 : base;
+  const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+  if (moves[e.key]) nudge(...moves[e.key]);
+  else if (e.key === "0") { dx = dy = 0; setZoom(1); }
+  else if (e.key === "+" || e.key === "=") setZoom(zoom + 0.05);
+  else if (e.key === "-" || e.key === "_") setZoom(zoom - 0.05);
+  else if (["1", "2", "3"].includes(e.key)) { $("mode").value = ["crop", "pad", "blur"][e.key - 1]; setZoom(zoom); }
+  else if (e.key.toLowerCase() === "s") download();
+  else return;
+  e.preventDefault();
+});
+
+const stage = $("stage");
+stage.addEventListener("dragover", (e) => { e.preventDefault(); stage.classList.add("over"); });
+stage.addEventListener("dragleave", () => stage.classList.remove("over"));
+stage.addEventListener("drop", (e) => { e.preventDefault(); stage.classList.remove("over"); load(e.dataTransfer.files[0]); });
+document.addEventListener("paste", (e) => {
+  const item = [...e.clipboardData.items].find((it) => it.type.startsWith("image/"));
+  if (item) load(item.getAsFile());
+});
+
+$("open").addEventListener("click", () => $("picker").click());
+$("picker").addEventListener("change", (e) => load(e.target.files[0]));
+$("mode").addEventListener("change", () => setZoom(zoom));
+$("zoom").addEventListener("change", () => setZoom($("zoom").value));
+$("color").addEventListener("input", schedule);
+$("width").addEventListener("input", schedule);
+$("dx").addEventListener("change", () => setOffset(+$("dx").value || 0, dy));
+$("dy").addEventListener("change", () => setOffset(dx, +$("dy").value || 0));
+$("reset").addEventListener("click", () => { dx = dy = 0; setZoom(1); });
+$("save").addEventListener("click", download);
+addEventListener("resize", schedule);
+schedule();
+</script>
+</body>
+</html>
