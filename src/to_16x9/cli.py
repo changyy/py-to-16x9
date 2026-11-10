@@ -11,6 +11,10 @@
   to-16x9 a.jpg b.png -m pad --color white --width 1920
   to-16x9 photo.jpg --offset-x -200 --offset-y 150
   to-16x9 photo.jpg --zoom 1.5 --offset-x 300
+  to-16x9 photo.jpg --ratio 9:7
+
+比例(--ratio,預設 16:9):
+  可用 W:H 或 WxH,例如 9:7、4x3、1:1;未指定 -o 時輸出到 output_WxH
 
 位移(--offset-x / --offset-y,單位為原尺寸像素,以中心為基準):
   crop      - 移動裁切框:+x 往右、-x 往左、+y 往下、-y 往上
@@ -32,18 +36,31 @@ from PIL import Image, ImageFilter, ImageOps
 from ._version import __version__
 
 RATIO = 16 / 9
+DEFAULT_RATIO = "16:9"
 EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 
 
-def target_size(w, h, mode):
-    """依模式算出 16:9 畫布尺寸(crop 往內縮,pad/blur 往外擴)。"""
+def parse_ratio(text):
+    """把 "9:7" / "9x7" 解析成 (寬, 高) 兩個正整數。"""
+    parts = text.lower().replace("x", ":").split(":")
+    try:
+        rw, rh = (int(p) for p in parts)
+    except ValueError:
+        raise ValueError(f"比例格式應為 W:H,例如 16:9 或 9:7,收到 {text!r}") from None
+    if rw <= 0 or rh <= 0:
+        raise ValueError(f"比例必須是正整數,收到 {text!r}")
+    return rw, rh
+
+
+def target_size(w, h, mode, ratio=RATIO):
+    """依模式算出目標比例的畫布尺寸(crop 往內縮,pad/blur 往外擴)。"""
     if mode == "crop":
-        if w / h > RATIO:
-            return round(h * RATIO), h
-        return w, round(w / RATIO)
-    if w / h > RATIO:
-        return w, round(w / RATIO)
-    return round(h * RATIO), h
+        if w / h > ratio:
+            return round(h * ratio), h
+        return w, round(w / ratio)
+    if w / h > ratio:
+        return w, round(w / ratio)
+    return round(h * ratio), h
 
 
 def check_zoom(mode, zoom):
@@ -59,17 +76,17 @@ def photo_size(w, h, zoom):
     return max(1, round(w * zoom)), max(1, round(h * zoom))
 
 
-def offset_range(w, h, mode, zoom=1.0):
-    """回傳輸出 16:9 尺寸,以及 offset-x / offset-y 可移動的 (最小, 最大) 範圍。
+def offset_range(w, h, mode, zoom=1.0, ratio=RATIO):
+    """回傳輸出尺寸,以及 offset-x / offset-y 可移動的 (最小, 最大) 範圍。
 
     crop 的尺寸即裁切框大小;pad/blur 則是畫布大小。
     """
     check_zoom(mode, zoom)
-    tw, th = target_size(w, h, mode)
+    tw, th = target_size(w, h, mode, ratio)
     if mode == "crop":
         if zoom != 1:
             tw = max(1, min(w, round(tw / zoom)))
-            th = max(1, min(h, round(tw / RATIO)))
+            th = max(1, min(h, round(tw / ratio)))
         slack_x, slack_y = w - tw, h - th
     else:
         pw, ph = photo_size(w, h, zoom)
@@ -87,10 +104,10 @@ def clamp_offset(offset, limits, axis, warn=True):
     return clamped
 
 
-def convert(img, mode, color, dx=0, dy=0, warn=True, zoom=1.0):
+def convert(img, mode, color, dx=0, dy=0, warn=True, zoom=1.0, ratio=RATIO):
     img = ImageOps.exif_transpose(img)  # 依 EXIF 轉正手機照片
     w, h = img.size
-    (tw, th), xr, yr = offset_range(w, h, mode, zoom)
+    (tw, th), xr, yr = offset_range(w, h, mode, zoom, ratio)
     dx = clamp_offset(dx, xr, "x", warn)
     dy = clamp_offset(dy, yr, "y", warn)
 
@@ -113,10 +130,10 @@ def convert(img, mode, color, dx=0, dy=0, warn=True, zoom=1.0):
     return bg
 
 
-def save(out, dst, width=None, quality=95):
+def save(out, dst, width=None, quality=95, ratio=RATIO):
     """依需要縮放後存檔,JPEG 會轉成 RGB。回傳實際輸出的圖。"""
     if width:
-        out = out.resize((width, round(width / RATIO)), Image.LANCZOS)
+        out = out.resize((width, round(width / ratio)), Image.LANCZOS)
     if Path(dst).suffix.lower() in {".jpg", ".jpeg"}:
         out.convert("RGB").save(dst, quality=quality)
     else:
@@ -135,13 +152,14 @@ def collect(paths):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="to-16x9", description="把照片轉成 16:9")
+    ap = argparse.ArgumentParser(prog="to-16x9", description="把照片轉成 16:9(或用 --ratio 指定其他比例)")
     ap.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("inputs", nargs="+", help="圖片檔或資料夾")
-    ap.add_argument("-o", "--outdir", default="output_16x9", help="輸出資料夾(預設 output_16x9)")
+    ap.add_argument("-o", "--outdir", help="輸出資料夾(預設 output_WxH,例如 output_16x9)")
     ap.add_argument("-m", "--mode", choices=["crop", "pad", "blur"], default="crop")
+    ap.add_argument("-r", "--ratio", default=DEFAULT_RATIO, help="輸出比例 W:H,例如 9:7、4:3、1:1(預設 16:9)")
     ap.add_argument("--color", default="black", help="pad 模式的邊框顏色,例如 black、white、#202020")
-    ap.add_argument("--width", type=int, help="輸出寬度(高度自動依 16:9 計算),例如 1920")
+    ap.add_argument("--width", type=int, help="輸出寬度(高度自動依比例計算),例如 1920")
     ap.add_argument("--offset-x", type=int, default=0, help="從中心水平位移的像素,正數往右、負數往左")
     ap.add_argument("--offset-y", type=int, default=0, help="從中心垂直位移的像素,正數往下、負數往上")
     ap.add_argument("--zoom", type=float, default=1.0,
@@ -150,23 +168,25 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         check_zoom(args.mode, args.zoom)
+        rw, rh = parse_ratio(args.ratio)
     except ValueError as e:
         ap.error(str(e))
+    ratio = rw / rh
 
-    outdir = Path(args.outdir)
+    outdir = Path(args.outdir or f"output_{rw}x{rh}")
     outdir.mkdir(parents=True, exist_ok=True)
 
     count = 0
     for src in collect(args.inputs):
         try:
             with Image.open(src) as img:
-                out = convert(img, args.mode, args.color, args.offset_x, args.offset_y, zoom=args.zoom)
+                out = convert(img, args.mode, args.color, args.offset_x, args.offset_y, zoom=args.zoom, ratio=ratio)
         except Exception as e:
             print(f"略過 {src}:{e}", file=sys.stderr)
             continue
 
         dst = outdir / src.name
-        out = save(out, dst, args.width, args.quality)
+        out = save(out, dst, args.width, args.quality, ratio)
         print(f"{src} -> {dst}  {out.size[0]}x{out.size[1]}")
         count += 1
 

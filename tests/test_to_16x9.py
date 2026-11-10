@@ -1,5 +1,6 @@
 import contextlib
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,7 +8,9 @@ from pathlib import Path
 from PIL import Image
 
 from to_16x9 import __version__
-from to_16x9.cli import check_zoom, clamp_offset, collect, convert, main, offset_range, save, target_size
+from to_16x9.cli import (
+    check_zoom, clamp_offset, collect, convert, main, offset_range, parse_ratio, save, target_size,
+)
 
 
 def bands(w, h):
@@ -30,6 +33,28 @@ class TargetSizeTest(unittest.TestCase):
     def test_already_16x9(self):
         for mode in ("crop", "pad", "blur"):
             self.assertEqual(target_size(1920, 1080, mode), (1920, 1080))
+
+
+class RatioTest(unittest.TestCase):
+    def test_parse(self):
+        self.assertEqual(parse_ratio("9:7"), (9, 7))
+        self.assertEqual(parse_ratio("4x3"), (4, 3))
+        self.assertEqual(parse_ratio("16X9"), (16, 9))
+
+    def test_parse_invalid(self):
+        for bad in ("", "9", "9:7:1", "a:b", "0:7", "9:-7", "1.5:1"):
+            with self.assertRaises(ValueError):
+                parse_ratio(bad)
+
+    def test_target_size_9x7(self):
+        self.assertEqual(target_size(1800, 1800, "crop", 9 / 7), (1800, 1400))
+        self.assertEqual(target_size(1800, 1800, "pad", 9 / 7), (2314, 1800))
+
+    def test_convert_and_save_9x7(self):
+        out = convert(Image.new("RGB", (1600, 1600), "white"), "crop", "black", zoom=2, ratio=9 / 7)
+        self.assertEqual(out.size, (800, 622))
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(save(out, Path(d) / "a.png", width=900, ratio=9 / 7).size, (900, 700))
 
 
 class OffsetRangeTest(unittest.TestCase):
@@ -213,6 +238,24 @@ class SaveAndCliTest(unittest.TestCase):
         self.run_main(str(self.dir / "sq.png"), "-o", str(outdir), "--zoom", "2", "--offset-x", "400")
         with Image.open(outdir / "sq.png") as img:
             self.assertEqual(img.size, (800, 450))
+
+    def test_main_ratio_default_outdir(self):
+        bands(1600, 1600).save(self.dir / "sq.png")
+        cwd = os.getcwd()
+        os.chdir(self.dir)  # contextlib.chdir 需要 3.11+
+        try:
+            self.run_main("sq.png", "--ratio", "9:7", "-m", "blur", "--width", "900")
+            self.run_main("sq.png")
+        finally:
+            os.chdir(cwd)
+        with Image.open(self.dir / "output_9x7" / "sq.png") as img:
+            self.assertEqual(img.size, (900, 700))
+        self.assertTrue((self.dir / "output_16x9" / "sq.png").exists())
+
+    def test_main_rejects_bad_ratio(self):
+        with self.assertRaises(SystemExit) as cm:
+            self.run_main(str(self.dir), "--ratio", "wide")
+        self.assertEqual(cm.exception.code, 2)
 
     def test_main_rejects_bad_zoom(self):
         with self.assertRaises(SystemExit) as cm:

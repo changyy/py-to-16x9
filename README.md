@@ -17,6 +17,7 @@ A command-line tool that batch converts photos to a 16:9 aspect ratio — by cen
 - 🔍 `--zoom` — tighter crop frame, or a smaller photo on the canvas, so it can move in both directions
 - 📁 Batch process files and folders in one command
 - 📐 Optional fixed output width (e.g. `--width 1920` → 1920×1080)
+- 🔲 `--ratio` for other aspect ratios, e.g. `9:7`, `4:3`, `1:1` (default 16:9)
 - 📱 Honors EXIF orientation from phone cameras
 - 🌐 Companion web page with drag / arrow-key positioning that shows the matching CLI command
 
@@ -40,6 +41,7 @@ to-16x9 photos/ -o out/ -m blur                    # whole folder, blurred backg
 to-16x9 a.jpg b.png -m pad --color white --width 1920
 to-16x9 photo.jpg --offset-x -200 --offset-y 150   # shift from center
 to-16x9 photo.jpg --zoom 1.5 --offset-x 300        # tighter crop, then move right
+to-16x9 photos/ --ratio 9:7 --width 900            # 9:7 → output_9x7/, 900×700
 ```
 
 `python -m to_16x9 ...` works too. Source files are never modified.
@@ -48,10 +50,11 @@ to-16x9 photo.jpg --zoom 1.5 --offset-x 300        # tighter crop, then move rig
 
 | Option | Description |
 |---|---|
-| `-o, --outdir` | Output folder (default `output_16x9`) |
+| `-o, --outdir` | Output folder (default `output_WxH`, e.g. `output_16x9`) |
 | `-m, --mode` | `crop` (default), `pad` or `blur` |
+| `-r, --ratio` | Output aspect ratio as `W:H` or `WxH`, e.g. `9:7`, `4:3` (default `16:9`) |
 | `--color` | Border color for `pad`, e.g. `black`, `white`, `#202020` |
-| `--width` | Output width; height follows 16:9 |
+| `--width` | Output width; height follows the ratio |
 | `--offset-x` | Horizontal shift from center in source pixels; positive = right |
 | `--offset-y` | Vertical shift from center in source pixels; positive = down |
 | `--zoom` | Photo scale vs. the default fit: `>= 1` for `crop`, `0`–`1` for `pad` / `blur` (default 1) |
@@ -77,6 +80,10 @@ from to_16x9 import convert
 with Image.open("photo.jpg") as img:
     out = convert(img, "blur", "black", dx=0, dy=-100, zoom=0.9)
 out.convert("RGB").save("photo_16x9.jpg")
+
+# Other ratios: pass ratio=width/height
+with Image.open("photo.jpg") as img:
+    out = convert(img, "crop", "black", ratio=9 / 7)
 ```
 
 ## Development

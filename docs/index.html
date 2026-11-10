@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>to-16x9</title>
-<meta name="description" content="Convert a photo to 16:9 in your browser: center crop, solid padding or blurred background, then drag to reposition. Nothing is uploaded.">
+<meta name="description" content="Convert a photo to 16:9 (or any ratio, e.g. 9:7) in your browser: center crop, solid padding or blurred background, then drag to reposition. Nothing is uploaded.">
 <style>
 :root {
   --bg: #f4f4f2; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
@@ -61,6 +61,8 @@ kbd { font-family: ui-monospace, Menlo, monospace; font-size: 12px; border: 1px 
   <input id="picker" type="file" accept="image/*" hidden>
   <span class="file" id="file"></span>
   <span class="spacer"></span>
+  <label>Ratio <input id="ratio" list="ratios" value="16:9" size="6" title="W:H, e.g. 9:7"></label>
+  <datalist id="ratios"><option value="16:9"><option value="9:7"><option value="4:3"><option value="3:2"><option value="1:1"><option value="4:5"><option value="9:16"></datalist>
   <label>Mode <select id="mode"><option value="crop">crop</option><option value="pad">pad</option><option value="blur">blur</option></select></label>
   <label id="colorBox">Color <input id="color" type="color" value="#000000"></label>
   <label>Zoom <input id="zoom" type="number" step="0.05" min="1" max="8" value="1"></label>
@@ -71,7 +73,7 @@ kbd { font-family: ui-monospace, Menlo, monospace; font-size: 12px; border: 1px 
   <button id="reset" title="Back to center, zoom 1 (0)">Reset</button>
   <button id="save" class="primary" title="Download (S)">Download</button>
 </header>
-<main id="stage"><canvas id="view" aria-label="16:9 preview"></canvas><div id="toast" role="status"></div></main>
+<main id="stage"><canvas id="view" aria-label="Preview"></canvas><div id="toast" role="status"></div></main>
 <footer>
   <span class="hint">Drop, paste or open a photo. Drag or <kbd>←</kbd><kbd>↑</kbd><kbd>→</kbd><kbd>↓</kbd> to move it
     (<kbd>Shift</kbd> ×10, <kbd>Alt</kbd> 1px) · wheel or <kbd>+</kbd><kbd>-</kbd> zoom · <kbd>0</kbd> reset · <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> mode · <kbd>S</kbd> download.
@@ -81,7 +83,15 @@ kbd { font-family: ui-monospace, Menlo, monospace; font-size: 12px; border: 1px 
 </footer>
 <script>
 // Same math as to_16x9/cli.py, so offsets shown here can be reused with the CLI for batch jobs.
-const RATIO = 16 / 9;
+let ratioText = "16:9", RATIO = 16 / 9;
+
+// Same rules as parse_ratio() in cli.py: "W:H" or "WxH", positive integers.
+function parseRatio(text) {
+  const parts = text.trim().toLowerCase().replace("x", ":").split(":").map((p) => p.trim());
+  if (parts.length !== 2 || !parts.every((p) => /^\d+$/.test(p))) return null;
+  const [rw, rh] = parts.map(Number);
+  return rw > 0 && rh > 0 ? [rw, rh] : null;
+}
 const $ = (id) => document.getElementById(id);
 const view = $("view");
 
@@ -147,7 +157,7 @@ function drawBlurred(ctx, img, w, h, outW, outH) {
   ctx.drawImage(cur, 0, 0, outW, outH);
 }
 
-// Render the 16:9 result of `img` (w×h source pixels) onto `canvas`, outW pixels wide.
+// Render the result of `img` (w×h source pixels) onto `canvas`, outW pixels wide.
 function render(canvas, img, w, h, mode, color, dx, dy, zoom, outW) {
   const r = offsetRange(w, h, mode, zoom);
   dx = clamp(dx, r.x); dy = clamp(dy, r.y);
@@ -224,6 +234,7 @@ function draw() {
   $("range").textContent = `${W}×${H} → ${r.tw}×${r.th} · x ${r.x[0]}~${r.x[1]} · y ${r.y[0]}~${r.y[1]}`
     + (r.x[0] === r.x[1] || r.y[0] === r.y[1] ? ` · ${mode() === "crop" ? "zoom > 1" : "zoom < 1"} to move both ways` : "");
   let cmd = `to-16x9 "${name}" -m ${mode()} --offset-x ${dx} --offset-y ${dy}`;
+  if (ratioText !== "16:9") cmd += ` --ratio ${ratioText}`;
   if (zoom !== 1) cmd += ` --zoom ${zoom}`;
   if (mode() === "pad" && $("color").value !== "#000000") cmd += ` --color "${$("color").value}"`;
   if ($("width").value) cmd += ` --width ${$("width").value}`;
@@ -260,7 +271,7 @@ function download() {
     if (!b) return toast("Export failed", "err");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(b);
-    a.download = name.replace(/\.[^.]+$/, "") + "_16x9." + t.split("/")[1].replace("jpeg", "jpg");
+    a.download = name.replace(/\.[^.]+$/, "") + `_${ratioText.replace(":", "x")}.` + t.split("/")[1].replace("jpeg", "jpg");
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     toast(`Saved ${a.download} · ${out.width}×${out.height}`, "ok");
@@ -317,6 +328,13 @@ document.addEventListener("paste", (e) => {
 $("open").addEventListener("click", () => $("picker").click());
 $("picker").addEventListener("change", (e) => load(e.target.files[0]));
 $("mode").addEventListener("change", () => setZoom(zoom));
+$("ratio").addEventListener("change", () => {
+  const r = parseRatio($("ratio").value);
+  if (!r) { $("ratio").value = ratioText; return toast("Ratio should look like 16:9 or 9:7", "err"); }
+  ratioText = r.join(":"); RATIO = r[0] / r[1];
+  $("ratio").value = ratioText;
+  setZoom(zoom);
+});
 $("zoom").addEventListener("change", () => setZoom($("zoom").value));
 $("color").addEventListener("input", schedule);
 $("width").addEventListener("input", schedule);
